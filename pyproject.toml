@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gmr-events"
+version = "0.1.0"
+description = "Runtime client lib for the gmr_app event log."
+requires-python = ">=3.11"
+authors = [{ name = "Fontem", email = "ops@void42.internal" }]
+license = { text = "Internal-only" }
+dependencies = [
+    "psycopg[binary]>=3.1",
+    "prometheus-client>=0.21",
+    "gmr-event-schemas>=0.1.0",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8", "psycopg-pool"]
+
+[tool.setuptools.packages.find]
+include = ["gmr_events*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

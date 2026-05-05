@@ -1,0 +1,22 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: python
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: pip install
+        run: |
+          pip install -e '.[test]'
+
+      - name: pytest
+        # The integration test starts an ephemeral Postgres via
+        # docker (using the same golden postgres-fontem image the
+        # cluster runs). The test runner has docker access.
+        run: pytest -v

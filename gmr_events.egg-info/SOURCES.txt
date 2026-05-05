@@ -1,0 +1,12 @@
+README.md
+pyproject.toml
+gmr_events/__init__.py
+gmr_events/consumer.py
+gmr_events/errors.py
+gmr_events/producer.py
+gmr_events.egg-info/PKG-INFO
+gmr_events.egg-info/SOURCES.txt
+gmr_events.egg-info/dependency_links.txt
+gmr_events.egg-info/requires.txt
+gmr_events.egg-info/top_level.txt
+tests/test_end_to_end.py
