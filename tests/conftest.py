@@ -18,7 +18,7 @@ import psycopg
 import pytest
 
 
-_IMAGE = "contribute.void42.internal/golden/postgres-fontem:16.13-pgv0.8.1"
+_IMAGE = "contribute.void42.internal/fontem/postgres-fontem:16.13-pgv0.8.1"
 
 
 def _free_port() -> int:

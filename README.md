@@ -2,10 +2,10 @@
 
 Runtime Python lib that producers and consumers use to talk to
 the `events.entity_events` log in `gmr_app`. Sister package to
-[gmr-event-schemas](https://contribute.void42.internal/golden/gmr-event-schemas)
+[gmr-event-schemas](https://contribute.void42.internal/fontem/gmr-event-schemas)
 (which only ships JSON Schemas + validators).
 
-See [fontem-ontology/MIGRATION.md](https://contribute.void42.internal/golden/fontem-ontology/src/branch/main/MIGRATION.md) for the architecture.
+See [fontem-ontology/MIGRATION.md](https://contribute.void42.internal/fontem/fontem-ontology/src/branch/main/MIGRATION.md) for the architecture.
 
 ## What you get
 
