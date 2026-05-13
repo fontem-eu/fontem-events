@@ -31,7 +31,7 @@ from dataclasses import dataclass
 from typing import Iterable
 
 import psycopg
-from gmr_event_schemas import EventEnvelope
+from fontem_event_schemas import EventEnvelope
 from prometheus_client import Counter, Gauge, Histogram, start_http_server
 
 from .errors import EventLogError, OffsetError

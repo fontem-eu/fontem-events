@@ -1,6 +1,6 @@
 # fontem-events
 
-Python client library (package: gmr_events — to be renamed). Exposes log.batch() / emit.* for producers and a generic event consumer base class for sinks. Wraps the events.entity_events table in Postgres with batch-id semantics and dead-letter handling.
+Python client library (package: fontem_events — to be renamed). Exposes log.batch() / emit.* for producers and a generic event consumer base class for sinks. Wraps the events.entity_events table in Postgres with batch-id semantics and dead-letter handling.
 
 ## Deploy
 

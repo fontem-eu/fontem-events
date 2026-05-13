@@ -2,7 +2,7 @@
 
 The producer's job:
 
-  * Build envelopes via the typed ``gmr_event_schemas.builders``.
+  * Build envelopes via the typed ``fontem_event_schemas.builders``.
   * Validate payloads against their JSON Schema before emit.
   * Insert in a single transaction per batch (all-or-nothing).
   * Stamp ``(producer, batch_id, iri)`` so consumers can dedupe
@@ -20,7 +20,7 @@ import uuid
 from typing import Any, Iterator
 
 import psycopg
-from gmr_event_schemas import EventEnvelope, validate
+from fontem_event_schemas import EventEnvelope, validate
 
 from .errors import EventLogError
 

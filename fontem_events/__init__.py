@@ -1,9 +1,9 @@
-"""gmr_events — producer + consumer client for the event log.
+"""fontem_events — producer + consumer client for the event log.
 
-Runtime layer on top of ``gmr_event_schemas`` (typed payloads)
+Runtime layer on top of ``fontem_event_schemas`` (typed payloads)
 and Postgres (durable storage in ``events.entity_events``).
 """
-from gmr_event_schemas import EventEnvelope, EventValidationError
+from fontem_event_schemas import EventEnvelope, EventValidationError
 
 from .consumer import EventConsumer
 from .errors import EventLogError, OffsetError

@@ -8,10 +8,10 @@ from __future__ import annotations
 import uuid
 
 import pytest
-from gmr_event_schemas import builders, EventEnvelope, EventValidationError
+from fontem_event_schemas import builders, EventEnvelope, EventValidationError
 
-from gmr_events import EventConsumer, EventLog
-from gmr_events.consumer import ConsumerConfig
+from fontem_events import EventConsumer, EventLog
+from fontem_events.consumer import ConsumerConfig
 
 
 SANCTION_GRAPH = "http://data.fontem.eu/graph/sanctions"
