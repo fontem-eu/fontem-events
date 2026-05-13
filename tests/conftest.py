@@ -37,7 +37,7 @@ def postgres_dsn() -> str:
         return
 
     port = _free_port()
-    name = f"gmr-events-it-{uuid.uuid4().hex[:8]}"
+    name = f"fontem-events-it-{uuid.uuid4().hex[:8]}"
     pwd = "events-test"
     subprocess.run(
         ["docker", "run", "-d", "--name", name,
