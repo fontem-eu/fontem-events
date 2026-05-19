@@ -11,9 +11,36 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: pip install
+      - name: Login to the internal registry
+        # The integration tests pull the postgres-fontem image via
+        # docker, which by default has no creds for
+        # contribute.void42.internal. Login here so the
+        # ephemeral-Postgres fixture in tests/conftest.py works.
         run: |
-          pip install -e '.[test]'
+          echo "${{ secrets.REGISTRY_PASSWORD }}" | docker login contribute.void42.internal -u "${{ secrets.REGISTRY_USER }}" --password-stdin
+
+      - name: Install fontem-event-schemas + this package
+        env:
+          GMR_CI_READ_TOKEN: ${{ secrets.GMR_CI_READ_TOKEN }}
+        run: |
+          # fontem-event-schemas is internal-only — not on PyPI or
+          # Nexus — so pip can't resolve the `fontem-event-schemas>=0.1.0`
+          # dependency from pyproject.toml on its own. Clone with the
+          # CI read token and install locally first, then install this
+          # package (with .[test]) on top. Mirrors fontem-api's pattern.
+          #
+          # `--no-build-isolation` skips pip's per-install setuptools
+          # bootstrap, which our Nexus proxy doesn't carry — without
+          # it the build subprocess errors with "Could not find a
+          # version that satisfies the requirement setuptools>=68".
+          # The runner already has setuptools+wheel pre-installed.
+          pip install --no-cache-dir --upgrade setuptools wheel
+          tmpdir=$(mktemp -d)
+          git clone --depth 1 \
+              "http://lucid:${GMR_CI_READ_TOKEN}@contribute.void42.internal/fontem/fontem-event-schemas.git" \
+              "$tmpdir/fontem-event-schemas"
+          pip install --no-cache-dir --no-build-isolation "$tmpdir/fontem-event-schemas"
+          pip install --no-cache-dir --no-build-isolation -e '.[test]'
 
       - name: pytest
         # The integration test starts an ephemeral Postgres via
