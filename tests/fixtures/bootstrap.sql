@@ -39,3 +39,26 @@ CREATE TABLE IF NOT EXISTS events.dead_letter (
 
 CREATE INDEX IF NOT EXISTS dead_letter_consumer
     ON events.dead_letter (consumer) TABLESPACE events_ts;
+
+-- ── ETL execution log ──────────────────────────────────────────
+-- One row per ETL CronJob invocation. Written by
+-- fontem_events.run_log.RunLog: status='running' on entry,
+-- 'success'|'failed' on clean exit, left at 'running' on hard
+-- crash (OOM, deadline kill). Drives the data-quality dashboard.
+CREATE TABLE IF NOT EXISTS events.etl_run (
+    run_id        BIGSERIAL PRIMARY KEY,
+    cronjob_name  TEXT        NOT NULL,
+    image_tag     TEXT,
+    started_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    finished_at   TIMESTAMPTZ,
+    status        TEXT        NOT NULL
+                  CHECK (status IN ('running','success','failed')),
+    summary       TEXT,
+    error_message TEXT
+) TABLESPACE events_ts;
+
+CREATE INDEX IF NOT EXISTS etl_run_cronjob_started
+    ON events.etl_run (cronjob_name, started_at DESC) TABLESPACE events_ts;
+CREATE INDEX IF NOT EXISTS etl_run_status_started
+    ON events.etl_run (status, started_at DESC) TABLESPACE events_ts
+    WHERE status IN ('running','failed');

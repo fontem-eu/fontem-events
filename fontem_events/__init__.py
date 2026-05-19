@@ -8,6 +8,7 @@ from fontem_event_schemas import EventEnvelope, EventValidationError
 from .consumer import EventConsumer
 from .errors import EventLogError, OffsetError
 from .producer import EventLog, EventBatch
+from .run_log import RunLog, recent_runs
 
 __all__ = [
     "EventBatch",
@@ -17,4 +18,6 @@ __all__ = [
     "EventLogError",
     "EventValidationError",
     "OffsetError",
+    "RunLog",
+    "recent_runs",
 ]
