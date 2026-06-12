@@ -10,9 +10,17 @@ A consumer is a long-lived process that:
   4. Commits the new offset in the same Postgres transaction as the
      work — so a crash mid-handle causes a redo, not a loss.
 
-Failures retry with exponential backoff up to ``max_attempts``;
-permanent failures land in ``events.dead_letter`` and the
-consumer skips past them.
+Failures retry with backoff. The whole batch is written to
+``events.dead_letter`` with an ``attempts`` counter on each
+failure. When the *same first seq* fails ``max_attempts`` times
+in a row, the consumer treats it as poison: it advances the
+offset past that single seq, logs loudly, and keeps draining the
+queue. The dead_letter row is the record of what was skipped;
+the operator triages from there. This prevents one bad event
+from jamming a consumer indefinitely — observed in prod on
+2026-06-09 when an un-escaped quote in an eu-cohesion
+Disclosure description had the virtuoso_sink retrying the same
+batch ~15,700 times over 66 hours.
 
 Observability:
 
@@ -89,6 +97,12 @@ class EventConsumer(abc.ABC):
         self._processed = _EVENTS_PROCESSED_TOTAL
         self._failed = _EVENTS_FAILED_TOTAL
         self._batch_size = _EVENT_BATCH_SIZE
+        # Poison-event detection. When the same first-seq fails
+        # max_attempts times in a row, we treat it as poison and skip.
+        # Reset on any successful batch or any failure at a different
+        # first-seq (so transient errors don't burn the counter).
+        self._last_failed_first_seq: int | None = None
+        self._consecutive_failures: int = 0
 
     # ── public API ────────────────────────────────────────
 
@@ -117,7 +131,8 @@ class EventConsumer(abc.ABC):
         """
 
     def run_once(self) -> int:
-        """Process one batch. Returns rows processed (0 = caught up)."""
+        """Process one batch. Returns rows processed (0 = caught up,
+        1 when we skipped a poison event)."""
         events = self._fetch()
         if not events:
             return 0
@@ -125,17 +140,41 @@ class EventConsumer(abc.ABC):
         try:
             self.handle(events)
         except Exception as exc:  # pylint: disable=broad-exception-caught
-            # Whole batch failed; per-event DLQ would require a
-            # different shape (one transaction per event). Today
-            # we just retry the batch up to max_attempts.
             self._record_batch_failure(events, exc)
+            first_seq = events[0].seq
+            if self._last_failed_first_seq == first_seq:
+                self._consecutive_failures += 1
+            else:
+                self._last_failed_first_seq = first_seq
+                self._consecutive_failures = 1
+
+            if self._consecutive_failures >= self.config.max_attempts:
+                logger.error(
+                    "%s: skipping poison event at seq=%d after %d "
+                    "consecutive failures; row stays in "
+                    "events.dead_letter for triage. Last error: %s",
+                    self.config.name, first_seq,
+                    self._consecutive_failures, exc,
+                )
+                self._commit_offset(first_seq)
+                self._reset_failure_state()
+                # Skipped event still counts as a "failed" event for
+                # the events_failed_total metric — already incremented
+                # by _record_batch_failure. Return 1 so run_forever
+                # doesn't sleep — keep draining the queue.
+                return 1
             raise
         last_seq = events[-1].seq
         self._commit_offset(last_seq)
+        self._reset_failure_state()
         for ev in events:
             self._processed.labels(consumer=self.config.name,
                                    event_type=ev.event_type).inc()
         return len(events)
+
+    def _reset_failure_state(self) -> None:
+        self._last_failed_first_seq = None
+        self._consecutive_failures = 0
 
     def run_forever(self) -> None:
         if self.config.metrics_port:
