@@ -16,7 +16,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-test = ["pytest>=9.0.2", "psycopg-pool"]
+test = ["pytest>=9.0.3", "psycopg-pool"]
 
 [tool.setuptools.packages.find]
 include = ["fontem_events*"]
