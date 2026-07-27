@@ -21,7 +21,7 @@ jobs:
 
       - name: Install fontem-event-schemas + this package
         env:
-          GMR_CI_READ_TOKEN: ${{ secrets.GMR_CI_READ_TOKEN }}
+          CI_READ_TOKEN: ${{ secrets.CI_READ_TOKEN }}
         run: |
           # fontem-event-schemas is internal-only — not on PyPI or
           # Nexus — so pip can't resolve the `fontem-event-schemas>=0.1.0`
@@ -37,7 +37,7 @@ jobs:
           pip install --no-cache-dir --upgrade setuptools wheel
           tmpdir=$(mktemp -d)
           git clone --depth 1 \
-              "http://lucid:${GMR_CI_READ_TOKEN}@contribute.void42.internal/fontem/fontem-event-schemas.git" \
+              "http://lucid:${CI_READ_TOKEN}@contribute.void42.internal/fontem/fontem-event-schemas.git" \
               "$tmpdir/fontem-event-schemas"
           pip install --no-cache-dir --no-build-isolation "$tmpdir/fontem-event-schemas"
           pip install --no-cache-dir --no-build-isolation -e '.[test]'
@@ -57,7 +57,7 @@ jobs:
         with:
           repository: void42/fontem-ci
           path: .fontem-ci
-          token: ${{ secrets.GMR_CI_READ_TOKEN }}
+          token: ${{ secrets.CI_READ_TOKEN }}
 
       - name: Login to the internal registry
         run: |
@@ -65,14 +65,14 @@ jobs:
 
       - name: Install fontem-event-schemas + this package
         env:
-          GMR_CI_READ_TOKEN: ${{ secrets.GMR_CI_READ_TOKEN }}
+          CI_READ_TOKEN: ${{ secrets.CI_READ_TOKEN }}
         run: |
           # Same install dance as the `test` job — see comments there.
           pip install --no-cache-dir --upgrade setuptools wheel
           pip install --no-cache-dir pytest-cov
           tmpdir=$(mktemp -d)
           git clone --depth 1 \
-              "http://lucid:${GMR_CI_READ_TOKEN}@contribute.void42.internal/fontem/fontem-event-schemas.git" \
+              "http://lucid:${CI_READ_TOKEN}@contribute.void42.internal/fontem/fontem-event-schemas.git" \
               "$tmpdir/fontem-event-schemas"
           pip install --no-cache-dir --no-build-isolation "$tmpdir/fontem-event-schemas"
           pip install --no-cache-dir --no-build-isolation -e '.[test]'
