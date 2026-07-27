@@ -149,12 +149,14 @@ class EventConsumer(abc.ABC):
                 self._consecutive_failures = 1
 
             if self._consecutive_failures >= self.config.max_attempts:
-                logger.error(
+                # logger.exception (not .error): the traceback is what a
+                # human needs to triage the poison row in events.dead_letter.
+                logger.exception(
                     "%s: skipping poison event at seq=%d after %d "
                     "consecutive failures; row stays in "
-                    "events.dead_letter for triage. Last error: %s",
+                    "events.dead_letter for triage.",
                     self.config.name, first_seq,
-                    self._consecutive_failures, exc,
+                    self._consecutive_failures,
                 )
                 self._commit_offset(first_seq)
                 self._reset_failure_state()
