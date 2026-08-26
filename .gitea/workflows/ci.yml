@@ -9,7 +9,7 @@ jobs:
   test:
     runs-on: python
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Login to the internal registry
         # The integration tests pull the postgres-fontem image via
@@ -52,8 +52,8 @@ jobs:
     needs: test
     runs-on: python
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
+      - uses: actions/checkout@v5
         with:
           repository: void42/fontem-ci
           path: .fontem-ci
