@@ -11,7 +11,7 @@ authors = [{ name = "Fontem", email = "ops@void42.internal" }]
 license = { text = "Internal-only" }
 dependencies = [
     "psycopg[binary]>=3.3.4",
-    "prometheus-client>=0.24.1",
+    "prometheus-client>=0.25.0",
     "fontem-event-schemas>=0.1.0",
 ]
 
