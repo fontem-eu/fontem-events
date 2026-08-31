@@ -15,7 +15,7 @@ import pytest
 
 from fontem_events import RunLog, reap_stale_runs
 from fontem_events.errors import EventLogError
-from fontem_events.reaper import DEFAULT_DEADLINE_SECONDS
+from fontem_events.reaper import DEFAULT_DEADLINE_SECONDS, main
 
 
 def _insert_running(dsn: str, cronjob: str, *, age_seconds: int,
@@ -187,3 +187,49 @@ def test_requires_a_dsn(monkeypatch):
     monkeypatch.delenv("EVENTS_DATABASE_URL", raising=False)
     with pytest.raises(EventLogError, match="EVENTS_DATABASE_URL"):
         reap_stale_runs()
+
+
+def test_main_reports_what_it_closed(postgres_dsn, monkeypatch, capsys):
+    """The CronJob's log is the only place an operator sees this run,
+    so the summary has to name the cronjobs it touched and the count."""
+    monkeypatch.setenv("EVENTS_DATABASE_URL", postgres_dsn)
+    _insert_running(postgres_dsn, "etl-reap-main-a",
+                    age_seconds=7200, deadline_seconds=3600)
+    _insert_running(postgres_dsn, "etl-reap-main-a",
+                    age_seconds=7200, deadline_seconds=3600)
+    _insert_running(postgres_dsn, "etl-reap-main-b",
+                    age_seconds=7200, deadline_seconds=3600)
+    main()
+    out = capsys.readouterr().out
+    assert "etl-reap-main-a" in out
+    assert "etl-reap-main-b" in out
+    assert "Done: reaped" in out
+
+
+def test_main_says_so_when_there_is_nothing_to_do(postgres_dsn, monkeypatch, capsys):
+    """The quiet path still has to print something. A silent run is
+    indistinguishable from a run that never happened."""
+    monkeypatch.setenv("EVENTS_DATABASE_URL", postgres_dsn)
+    reap_stale_runs(postgres_dsn)  # drain anything left by earlier tests
+    main()
+    assert "no stale runs to reap" in capsys.readouterr().out
+
+
+def test_main_honours_the_env_overrides(postgres_dsn, monkeypatch, capsys):
+    """The chart tunes the reaper through these two variables; if they
+    were ignored, a misconfigured default could close live runs."""
+    monkeypatch.setenv("EVENTS_DATABASE_URL", postgres_dsn)
+    monkeypatch.setenv("REAP_DEFAULT_DEADLINE_SECONDS", "60")
+    monkeypatch.setenv("REAP_GRACE_SECONDS", "0")
+    run_id = _insert_running(postgres_dsn, "etl-reap-main-env",
+                             age_seconds=600, deadline_seconds=None)
+    main()
+    assert _row(postgres_dsn, run_id)["status"] == "crashed"
+    assert "etl-reap-main-env" in capsys.readouterr().out
+
+
+def test_main_propagates_a_missing_dsn(monkeypatch):
+    """Misconfiguration must fail the CronJob, not exit 0 quietly."""
+    monkeypatch.delenv("EVENTS_DATABASE_URL", raising=False)
+    with pytest.raises(EventLogError):
+        main()

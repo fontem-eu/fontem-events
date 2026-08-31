@@ -95,8 +95,14 @@ def reap_stale_runs(
         return [dict(zip(cols, row)) for row in cur.fetchall()]
 
 
-def main() -> int:
-    """Entry point for the etl-run-reaper CronJob."""
+def main() -> None:
+    """Entry point for the etl-run-reaper CronJob.
+
+    Returns nothing and lets failures raise: the CronJob's exit code is
+    what the alerting pipeline reads, and an EventLogError here means
+    the reaper could not reach the run log at all — which should fail
+    the job loudly rather than be flattened into a status code.
+    """
     default = int(
         os.environ.get("REAP_DEFAULT_DEADLINE_SECONDS", DEFAULT_DEADLINE_SECONDS)
     )
@@ -105,7 +111,7 @@ def main() -> int:
 
     if not reaped:
         print("Done: no stale runs to reap")
-        return 0
+        return
 
     by_job: dict[str, int] = {}
     for row in reaped:
@@ -113,8 +119,7 @@ def main() -> int:
     for name, count in sorted(by_job.items(), key=lambda kv: -kv[1]):
         print(f"  reaped {count:3d}  {name}")
     print(f"Done: reaped {len(reaped)} stale run(s) across {len(by_job)} cronjob(s)")
-    return 0
 
 
 if __name__ == "__main__":  # pragma: no cover
-    raise SystemExit(main())
+    main()
