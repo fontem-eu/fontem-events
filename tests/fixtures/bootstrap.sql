@@ -44,21 +44,42 @@ CREATE INDEX IF NOT EXISTS dead_letter_consumer
 -- One row per ETL CronJob invocation. Written by
 -- fontem_events.run_log.RunLog: status='running' on entry,
 -- 'success'|'failed' on clean exit, left at 'running' on hard
--- crash (OOM, deadline kill). Drives the data-quality dashboard.
+-- crash (OOM, deadline kill) until the reaper rewrites it to
+-- 'crashed'. Drives the data-quality dashboard.
+--
+-- deadline_seconds mirrors the CronJob's activeDeadlineSeconds and is
+-- what makes crash detection provable rather than guessed: past
+-- started_at + deadline_seconds, Kubernetes has already killed the
+-- pod, so a row still marked 'running' cannot be alive. NULL for rows
+-- written before the column existed; the reaper falls back to a
+-- default for those.
 CREATE TABLE IF NOT EXISTS events.etl_run (
-    run_id        BIGSERIAL PRIMARY KEY,
-    cronjob_name  TEXT        NOT NULL,
-    image_tag     TEXT,
-    started_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
-    finished_at   TIMESTAMPTZ,
-    status        TEXT        NOT NULL
-                  CHECK (status IN ('running','success','failed')),
-    summary       TEXT,
-    error_message TEXT
+    run_id           BIGSERIAL PRIMARY KEY,
+    cronjob_name     TEXT        NOT NULL,
+    image_tag        TEXT,
+    started_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    finished_at      TIMESTAMPTZ,
+    status           TEXT        NOT NULL
+                     CHECK (status IN ('running','success','failed','crashed')),
+    summary          TEXT,
+    error_message    TEXT,
+    deadline_seconds INTEGER
 ) TABLESPACE events_ts;
+
+-- Both statements are for databases created before these existed;
+-- they are no-ops on a fresh bootstrap.
+ALTER TABLE events.etl_run
+    ADD COLUMN IF NOT EXISTS deadline_seconds INTEGER;
+
+DO $$
+BEGIN
+    ALTER TABLE events.etl_run DROP CONSTRAINT IF EXISTS etl_run_status_check;
+    ALTER TABLE events.etl_run ADD CONSTRAINT etl_run_status_check
+        CHECK (status IN ('running','success','failed','crashed'));
+END $$;
 
 CREATE INDEX IF NOT EXISTS etl_run_cronjob_started
     ON events.etl_run (cronjob_name, started_at DESC) TABLESPACE events_ts;
 CREATE INDEX IF NOT EXISTS etl_run_status_started
     ON events.etl_run (status, started_at DESC) TABLESPACE events_ts
-    WHERE status IN ('running','failed');
+    WHERE status IN ('running','failed','crashed');

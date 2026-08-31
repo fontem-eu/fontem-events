@@ -24,16 +24,18 @@ without grepping logs.
 
 Crashes that kill the process before ``__exit__`` runs (SIGKILL on
 OOM or activeDeadlineSeconds, node eviction) leave the row in
-``status='running'`` indefinitely. The dashboard / a paired cron
-should treat any ``running`` row older than the cronjob's deadline
-as ``crashed`` — that's the only way to detect a sudden death
-post-hoc.
+``status='running'``. ``fontem_events.reaper`` closes those out to
+``crashed``, using the ``deadline_seconds`` recorded here: past
+``started_at + deadline_seconds`` Kubernetes has already killed the
+pod, so the row is provably dead rather than merely old. Pass the
+CronJob's ``activeDeadlineSeconds`` via ``RUN_DEADLINE_SECONDS`` (the
+chart templates both from one value) or crash detection falls back to
+a conservative default.
 """
 from __future__ import annotations
 
 import os
 import traceback
-from datetime import datetime, timezone
 from typing import Any
 
 import psycopg
@@ -57,10 +59,12 @@ class RunLog:
         *,
         cronjob_name: str,
         image_tag: str | None = None,
+        deadline_seconds: int | None = None,
     ) -> None:
         self._dsn = dsn
         self._cronjob = cronjob_name
         self._image_tag = image_tag
+        self._deadline_seconds = deadline_seconds
         self._run_id: int | None = None
         self._summary: str | None = None
 
@@ -70,17 +74,33 @@ class RunLog:
         cronjob_name: str,
         env_var: str = "EVENTS_DATABASE_URL",
         image_tag_var: str = "IMAGE_TAG",
+        deadline_var: str = "RUN_DEADLINE_SECONDS",
     ) -> "RunLog":
-        """Build from the standard CronJob env (EVENTS_DATABASE_URL + IMAGE_TAG)."""
+        """Build from the standard CronJob env.
+
+        ``RUN_DEADLINE_SECONDS`` mirrors the CronJob's
+        ``activeDeadlineSeconds``; it is what lets the reaper prove a
+        row is dead. Absent or unparseable, it stays NULL and the
+        reaper falls back to its conservative default — a worse
+        signal, never a wrong one.
+        """
         dsn = os.environ.get(env_var)
         if not dsn:
             raise EventLogError(
                 f"{env_var} is not set; cannot reach the run log"
             )
+        raw_deadline = os.environ.get(deadline_var)
+        try:
+            deadline = int(raw_deadline) if raw_deadline else None
+        except ValueError:
+            # A malformed deadline must not stop the loader from
+            # running; degrade to the reaper's default instead.
+            deadline = None
         return cls(
             dsn,
             cronjob_name=cronjob_name,
             image_tag=os.environ.get(image_tag_var),
+            deadline_seconds=deadline,
         )
 
     def set_summary(self, summary: str) -> None:
@@ -91,7 +111,10 @@ class RunLog:
 
     def __enter__(self) -> "RunLog":
         with psycopg.connect(self._dsn, autocommit=True) as conn, conn.cursor() as cur:
-            cur.execute(_INSERT_RUNNING_SQL, (self._cronjob, self._image_tag))
+            cur.execute(
+                _INSERT_RUNNING_SQL,
+                (self._cronjob, self._image_tag, self._deadline_seconds),
+            )
             self._run_id = cur.fetchone()[0]
         return self
 
@@ -112,8 +135,9 @@ class RunLog:
 
 
 _INSERT_RUNNING_SQL = """
-INSERT INTO events.etl_run (cronjob_name, image_tag, started_at, status)
-VALUES (%s, %s, now(), 'running')
+INSERT INTO events.etl_run
+       (cronjob_name, image_tag, started_at, status, deadline_seconds)
+VALUES (%s, %s, now(), 'running', %s)
 RETURNING run_id
 """
 

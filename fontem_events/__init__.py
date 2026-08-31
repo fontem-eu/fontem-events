@@ -8,6 +8,7 @@ from fontem_event_schemas import EventEnvelope, EventValidationError
 from .consumer import EventConsumer
 from .errors import EventLogError, OffsetError
 from .producer import EventLog, EventBatch
+from .reaper import reap_stale_runs
 from .run_log import RunLog, recent_runs
 
 __all__ = [
@@ -19,5 +20,6 @@ __all__ = [
     "EventValidationError",
     "OffsetError",
     "RunLog",
+    "reap_stale_runs",
     "recent_runs",
 ]
