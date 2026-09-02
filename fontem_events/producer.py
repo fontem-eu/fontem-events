@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+import threading
 import uuid
 from typing import Any, Iterator
 
@@ -31,6 +32,8 @@ class EventLog:
     def __init__(self, dsn: str) -> None:
         self._dsn = dsn
         self._conn: psycopg.Connection | None = None
+        # One connection, one transaction at a time. See batch().
+        self._batch_lock = threading.Lock()
 
     @classmethod
     def from_env(
@@ -64,14 +67,35 @@ class EventLog:
         All events emitted in the block are inserted in a single
         transaction. If the block raises, nothing lands. On
         clean exit the transaction commits.
+
+        Serialised across threads, because one EventLog holds one
+        connection and psycopg's ``transaction()`` is not re-entrant
+        across threads on a shared one. Without the lock a thread that
+        enters while another's transaction is open gets a SAVEPOINT
+        instead of a transaction; the two exit out of order, psycopg
+        raises OutOfOrderTransactionNesting, and the abandoned
+        subtransactions hold ExclusiveLocks released only when the
+        outermost transaction ends — on a long-lived producer, never.
+
+        That took prod's Postgres down on 2026-09-02: one consolidator
+        connection reached 1,045 locks, the lock table
+        (max_locks_per_transaction 64 x max_connections 100 = 6,400)
+        filled, and every new connection got "FATAL: out of shared
+        memory". The caller swallowed emit failures, so it looked silent
+        while most emits were in fact failing. Reproduced at 8 threads:
+        +92 locks and 110 OutOfOrderTransactionNesting errors in 160
+        emits, and with the lock removed the suite hangs outright.
+        Single-threaded, neither happens — which is why a
+        single-threaded test does not catch this.
+
+        The lock makes the cost explicit rather than hiding it: emits
+        queue behind one another. If that ever becomes the bottleneck
+        the answer is a connection pool, not removing this.
         """
-        conn = self.connect()
-        try:
+        with self._batch_lock:
+            conn = self.connect()
             with conn.transaction():
                 yield EventBatch(conn=conn, batch_id=batch_id, producer=producer)
-        except Exception:
-            # transaction() rolled back; rethrow so the caller sees it
-            raise
 
 
 class EventBatch:
