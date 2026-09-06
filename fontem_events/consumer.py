@@ -10,17 +10,30 @@ A consumer is a long-lived process that:
   4. Commits the new offset in the same Postgres transaction as the
      work — so a crash mid-handle causes a redo, not a loss.
 
-Failures retry with backoff. The whole batch is written to
-``events.dead_letter`` with an ``attempts`` counter on each
-failure. When the *same first seq* fails ``max_attempts`` times
-in a row, the consumer treats it as poison: it advances the
-offset past that single seq, logs loudly, and keeps draining the
-queue. The dead_letter row is the record of what was skipped;
-the operator triages from there. This prevents one bad event
-from jamming a consumer indefinitely — observed in prod on
-2026-06-09 when an un-escaped quote in an eu-cohesion
+Failures retry with backoff, and fall into two kinds.
+
+A *poison* failure is deterministic and belongs to the event
+itself — bad data no retry will fix. The whole batch is written
+to ``events.dead_letter`` with an ``attempts`` counter, and when
+the same first seq fails ``max_attempts`` times in a row the
+consumer advances the offset past that single seq, logs loudly,
+and keeps draining. The dead_letter row is the record of what
+was skipped; the operator triages from there. This prevents one
+bad event from jamming a consumer indefinitely — observed in
+prod on 2026-06-09 when an un-escaped quote in an eu-cohesion
 Disclosure description had the virtuoso_sink retrying the same
 batch ~15,700 times over 66 hours.
+
+A *retryable* failure is the downstream store being unreachable
+or overloaded, and says nothing about the event. Subclasses
+classify these by overriding ``is_retryable``. They retry
+forever: the offset never advances, and nothing is written to
+dead_letter. Skipping them is silent, permanent data loss —
+``--since``-windowed ETL never re-emits a skipped event, so the
+projection is simply wrong from then on. Observed in shared on
+2026-09-06, when Virtuoso was OOM-killed during a replay and the
+sink skipped 4,006 events in the outage window rather than
+waiting for it to come back.
 
 Observability:
 
@@ -127,8 +140,25 @@ class EventConsumer(abc.ABC):
         """Apply a batch of events. Must be idempotent.
 
         Raise to trigger retry; events that exceed
-        ``max_attempts`` get DLQ'd.
+        ``max_attempts`` get DLQ'd — unless ``is_retryable`` says
+        the failure is the store's fault, in which case the batch
+        retries forever and the offset holds.
         """
+
+    def is_retryable(self, exc: Exception) -> bool:
+        # pylint: disable=unused-argument
+        """Is this failure the downstream store's fault, not the event's?
+
+        Return True for connection refused/reset, timeouts, 5xx, 429 —
+        anything where the same event would succeed once the store is
+        healthy again. Those must never advance the offset: the event
+        log is the only copy, and a skipped event is never re-emitted.
+
+        Default False, which preserves the poison-skip behaviour for
+        subclasses that do not classify. Override in consumers that
+        talk to a network store.
+        """
+        return False
 
     def run_once(self) -> int:
         """Process one batch. Returns rows processed (0 = caught up,
@@ -140,6 +170,22 @@ class EventConsumer(abc.ABC):
         try:
             self.handle(events)
         except Exception as exc:  # pylint: disable=broad-exception-caught
+            if self.is_retryable(exc):
+                # The store is down, not the event. Hold the offset and
+                # let run_forever back off. No dead_letter row: a row
+                # per event per retry is noise that never self-heals,
+                # and there is nothing for an operator to triage — the
+                # batch replays intact when the store returns.
+                self._failed.labels(
+                    consumer=self.config.name, event_type="_retryable",
+                ).inc(len(events))
+                logger.warning(
+                    "%s: downstream unavailable at seq=%d (%s: %s); "
+                    "holding offset and retrying",
+                    self.config.name, events[0].seq,
+                    type(exc).__name__, exc,
+                )
+                raise
             self._record_batch_failure(events, exc)
             first_seq = events[0].seq
             if self._last_failed_first_seq == first_seq:
