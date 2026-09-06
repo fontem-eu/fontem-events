@@ -90,6 +90,10 @@ def test_emit_rolls_back_on_exception(postgres_dsn) -> None:
 
 # ── consumer-side ────────────────────────────────────────────────
 
+class _Outage(RuntimeError):
+    """Stands in for httpx.ConnectError & friends: the store is down."""
+
+
 class _CapturingConsumer(EventConsumer):
     """Records every event handed to handle()."""
 
@@ -109,8 +113,13 @@ class _CapturingConsumer(EventConsumer):
         # If set, raise whenever the batch's FIRST event has this seq.
         # Used to simulate a poison event at a specific position.
         self.poison_first_seq: int | None = None
+        # When True, every batch raises _Outage — the stand-in for
+        # "the downstream store is unreachable".
+        self.outage: bool = False
 
     def handle(self, batch: list[EventEnvelope]) -> None:
+        if self.outage:
+            raise _Outage("connection refused")
         if self.fail_until > 0:
             self.fail_until -= 1
             raise RuntimeError("simulated handler failure")
@@ -118,6 +127,9 @@ class _CapturingConsumer(EventConsumer):
                 and batch and batch[0].seq == self.poison_first_seq):
             raise RuntimeError("simulated poison event")
         self.received.extend(batch)
+
+    def is_retryable(self, exc: Exception) -> bool:
+        return isinstance(exc, _Outage)
 
 
 def _emit_three(postgres_dsn) -> uuid.UUID:
@@ -321,3 +333,53 @@ def test_high_watermark_gating(postgres_dsn) -> None:
     upstream.run_once()
     downstream.run_once()
     assert len(downstream.received) == 3
+
+
+def test_outage_never_advances_the_offset(postgres_dsn) -> None:
+    """Regression test for the 2026-09-06 shared replay.
+
+    Virtuoso was OOM-killed mid-replay. Every batch failed with
+    "Connection refused", which the consumer counted as poison, so
+    after max_attempts it advanced the offset past the event and
+    moved on — 4,006 events skipped in the outage window. Nothing
+    re-emits them: ``--since``-windowed ETL only ever emits new
+    rows, so the projection is permanently missing those events.
+
+    A failure the consumer classifies as retryable must therefore
+    hold the offset no matter how many times it recurs, and must
+    not litter dead_letter with rows no operator can act on. When
+    the store comes back, the same batch is processed intact.
+    """
+    _emit_three(postgres_dsn)
+    with psycopg.connect(postgres_dsn) as c:
+        seqs = [r[0] for r in c.execute(
+            "SELECT seq FROM events.entity_events ORDER BY seq"
+        ).fetchall()]
+
+    sink = _CapturingConsumer(
+        postgres_dsn, name="virtuoso_sink", max_attempts=3, batch_size=10,
+    )
+    sink.outage = True
+
+    # Well past max_attempts. Every one must raise, never skip.
+    for _attempt in range(sink.config.max_attempts * 3):
+        with pytest.raises(_Outage):
+            sink.run_once()
+
+    with psycopg.connect(postgres_dsn) as c:
+        offset = c.execute(
+            "SELECT last_seq FROM events.consumer_offsets "
+            "WHERE consumer_name='virtuoso_sink'"
+        ).fetchone()
+        dlq = c.execute(
+            "SELECT count(*) FROM events.dead_letter "
+            "WHERE consumer='virtuoso_sink'"
+        ).fetchone()[0]
+    assert offset is None, "offset advanced during an outage"
+    assert dlq == 0, "outage wrote dead_letter rows an operator cannot act on"
+    assert not sink.received
+
+    # Store comes back: the batch is processed intact, nothing lost.
+    sink.outage = False
+    assert sink.run_once() == 3
+    assert [e.seq for e in sink.received] == seqs
