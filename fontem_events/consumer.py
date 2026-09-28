@@ -10,6 +10,19 @@ A consumer is a long-lived process that:
   4. Commits the new offset in the same Postgres transaction as the
      work — so a crash mid-handle causes a redo, not a loss.
 
+Only a contiguous run of seqs is ever consumed. A seq is taken from
+the sequence when a producer inserts, but the row becomes visible
+when that producer commits, so a later seq can be committed while an
+earlier one is still in flight. Reading ``seq > offset`` and
+committing the highest seq seen would step over the in-flight one,
+which nothing ever reads again: that lost 9,567 of 18,957 Kohesio
+projects on 2026-09-28, loaded while two TED rescans committed
+around each 1,000-project chunk. So a fetch stops at the first
+missing seq and waits. A missing seq stops waiting once every
+transaction that was running when the gap was first seen has ended:
+from then on the row is visible if it was committed, and it was
+rolled back if it is still missing (see ``_contiguous``).
+
 Failures retry with backoff, and fall into two kinds.
 
 A *poison* failure is deterministic and belongs to the event
@@ -96,6 +109,26 @@ class ConsumerConfig:
     upstream_consumer: str | None = None  # high-watermark gating
     metrics_port: int | None = 9100
     kuma_push_url: str | None = None
+    #: How long after first seeing a missing seq its horizon is taken.
+    #: A producer takes its seq a moment before it is given a
+    #: transaction id; by now every holder of the seq has one, so the
+    #: horizon cannot miss it.
+    gap_min_wait_seconds: float = 5.0
+    #: ...and always passed after this, so a session left idle in a
+    #: transaction cannot stall the consumer forever. Passing it then is
+    #: logged as an error: if the seq was only slow, it is lost.
+    gap_max_wait_seconds: float = 1800.0
+
+
+@dataclass
+class _Gap:
+    """A missing seq the consumer is waiting on."""
+
+    first_seen: float
+    #: Snapshot xmax once the seq has been missing for
+    #: gap_min_wait_seconds: every transaction that could hold it has an
+    #: id below this. None until then.
+    horizon: int | None = None
 
 
 class EventConsumer(abc.ABC):
@@ -116,6 +149,9 @@ class EventConsumer(abc.ABC):
         # first-seq (so transient errors don't burn the counter).
         self._last_failed_first_seq: int | None = None
         self._consecutive_failures: int = 0
+        # Missing seqs being waited on, by seq. In memory on purpose: a
+        # restart only means seeing a gap afresh and waiting once more.
+        self._gaps: dict[int, _Gap] = {}
 
     # ── public API ────────────────────────────────────────
 
@@ -287,9 +323,15 @@ class EventConsumer(abc.ABC):
         sql += "ORDER BY seq LIMIT %s"
         params.append(self.config.batch_size)
 
-        cur = self._connect().execute(sql, params)
-        rows = cur.fetchall()
-        self._connect().commit()  # release the read txn
+        conn = self._connect()
+        # Oldest transaction still running, BEFORE the read: a gap whose
+        # holders all ended before this point is settled in what we read.
+        oldest_running = self._snapshot_bound(conn, "pg_snapshot_xmin")
+        rows = conn.execute(sql, params).fetchall()
+        # Newest possible holder of a gap seen in this read.
+        horizon = self._snapshot_bound(conn, "pg_snapshot_xmax")
+        conn.commit()  # release the read txn
+        rows = self._contiguous(rows, offset, oldest_running, horizon)
 
         out = [
             EventEnvelope(
@@ -306,6 +348,59 @@ class EventConsumer(abc.ABC):
                 max(0.0, time.time() - newest_ts.timestamp())
             )
         return out
+
+    @staticmethod
+    def _snapshot_bound(conn: psycopg.Connection, fn: str) -> int:
+        """xmin or xmax of the current snapshot, as a 64-bit xid."""
+        return int(conn.execute(
+            f"SELECT {fn}(pg_current_snapshot())::text").fetchone()[0])
+
+    def _contiguous(self, rows: list, offset: int, oldest_running: int,
+                    horizon: int) -> list:
+        """The rows up to the first seq that may still be in flight.
+
+        A missing seq is passed only once it is settled: every
+        transaction that could hold it (an id below the horizon taken
+        ``gap_min_wait_seconds`` after it was first seen) had ended
+        before this read began (``oldest_running`` has moved past it).
+        A settled seq was rolled back: had it been committed, this read
+        would hold it.
+        """
+        now = time.monotonic()
+        expected = offset + 1
+        out = []
+        for row in rows:
+            seq = row[0]
+            if seq != expected and not self._gap_settled(
+                    expected, seq, oldest_running, horizon, now):
+                break
+            out.append(row)
+            expected = seq + 1
+        self._gaps = {s: g for s, g in self._gaps.items() if s >= expected}
+        return out
+
+    def _gap_settled(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+        self, first_missing: int, next_seen: int, oldest_running: int,
+        horizon: int, now: float,
+    ) -> bool:
+        gap = self._gaps.setdefault(first_missing, _Gap(first_seen=now))
+        waited = now - gap.first_seen
+        if waited >= self.config.gap_max_wait_seconds:
+            logger.error(
+                "%s: seqs %d..%d still missing after %.0fs while older "
+                "transactions run; passing them. If one commits later it "
+                "will not be read.",
+                self.config.name, first_missing, next_seen - 1, waited)
+            return True
+        if gap.horizon is None:
+            if waited >= self.config.gap_min_wait_seconds:
+                gap.horizon = horizon
+            return False
+        if oldest_running >= gap.horizon:
+            logger.info("%s: seqs %d..%d were never committed; passing them",
+                        self.config.name, first_missing, next_seen - 1)
+            return True
+        return False
 
     def _record_batch_failure(
         self, events: Iterable[EventEnvelope], exc: Exception,
